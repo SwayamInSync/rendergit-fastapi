@@ -142,6 +142,9 @@ def decide_file(path: pathlib.Path, repo_root: pathlib.Path, max_bytes: int) -> 
     # Ignore VCS and build junk
     if "/.git/" in f"/{rel}/" or rel.startswith(".git/"):
         return FileInfo(path, rel, size, RenderDecision(False, "ignored"))
+    # ignore the github workflows and docs
+    if rel.startswith(".") or rel.startswith("docs/"):
+        return FileInfo(path, rel, size, RenderDecision(False, "ignored"))
     if size > max_bytes:
         return FileInfo(path, rel, size, RenderDecision(False, "too_large"))
     if looks_binary(path):
