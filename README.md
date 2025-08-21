@@ -17,7 +17,7 @@ pip install -e .
 Now you can just `rendergit` any GitHub url e.g.:
 
 ```bash
-rendergit https://github.com/karpathy/nanoGPT
+rendergit https://github.com/karpathy/nanoGPT --serve 8000
 ```
 
 The code will:
