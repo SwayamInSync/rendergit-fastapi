@@ -238,7 +238,7 @@ def generate_cxml_text(infos: List[FileInfo], repo_dir: pathlib.Path) -> str:
     return "\n".join(lines)
 
 
-def build_html(repo_url: str, repo_dir: pathlib.Path, head_commit: str, infos: List[FileInfo]) -> str:
+def build_html(repo_url: str, repo_dir: pathlib.Path, head_commit: str, infos: List[FileInfo]) -> tuple[str, str]:
     formatter = HtmlFormatter(nowrap=False)
     pygments_css = formatter.get_style_defs('.highlight')
 
@@ -308,7 +308,7 @@ def build_html(repo_url: str, repo_dir: pathlib.Path, head_commit: str, infos: L
     )
 
     # HTML with left sidebar TOC
-    return f"""
+    return cxml_text, f"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -566,6 +566,7 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=8000, help="Port for FastAPI server (default: 8000)")
     ap.add_argument("--host", default="0.0.0.0", help="Host for FastAPI server (default: 0.0.0.0)")
     ap.add_argument("--no-open", action="store_true", help="Don't open the HTML file in browser after generation (only for file mode)")
+    ap.add_argument("--cxml-only", action="store_true", help="Only generate CXML text, do not render HTML")
     args = ap.parse_args()
     
     # Check FastAPI availability if serving
@@ -593,7 +594,15 @@ def main() -> int:
         print(f"✓ Found {len(infos)} files total ({rendered_count} will be rendered, {skipped_count} skipped)", file=sys.stderr)
         
         print(f"🔨 Generating HTML...", file=sys.stderr)
-        html_out = build_html(args.repo_url, repo_dir, head, infos)
+        cxml_test, html_out = build_html(args.repo_url, repo_dir, head, infos)
+
+        if args.cxml_only:
+            print(f"📄 Writing CXML file: {args.out}", file=sys.stderr)
+            out_path = pathlib.Path(args.out)
+            out_path.write_text(cxml_test, encoding="utf-8")
+            file_size = out_path.stat().st_size
+            print(f"✓ Wrote {bytes_human(file_size)} to {out_path}", file=sys.stderr)
+            return 0
 
         if args.serve:
             # Serve via FastAPI
