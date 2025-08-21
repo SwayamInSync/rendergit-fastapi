@@ -18,6 +18,10 @@ Now you can just `rendergit` any GitHub url e.g.:
 
 ```bash
 rendergit https://github.com/karpathy/nanoGPT --serve 8000
+
+# for large repos just sace the cxml
+rendergit https://github.com/tinygrad/tinygrad.git --cxml-o
+nly --out tinygrad.txt
 ```
 
 The code will:
