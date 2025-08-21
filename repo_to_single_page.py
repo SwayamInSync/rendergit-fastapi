@@ -11,16 +11,19 @@ Features
 - Skips binaries and files over a size threshold (default: 50 KiB)
 - Lists skipped binaries / large files at the top
 - Includes repo metadata, counts, and a directory tree header
+- Serves via FastAPI server for remote access
 
 Usage
-    python repo_to_single_page.py https://github.com/user/repo -o out.html
+    python repo_to_single_page_server.py https://github.com/user/repo --serve --port 8000
+    python repo_to_single_page_server.py https://github.com/user/repo -o out.html
 
 Requirements
-    pip install pygments markdown
+    pip install pygments markdown fastapi uvicorn
 
 Notes
 - Requires a working `git` in PATH.
 - If the `tree` command is unavailable, a Python fallback is used.
+- Use --serve to host via FastAPI instead of saving to file
 """
 
 from __future__ import annotations
@@ -34,7 +37,9 @@ import sys
 import tempfile
 import webbrowser
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Tuple, Optional
+import asyncio
+import signal
 
 # External deps
 from pygments import highlight
@@ -47,7 +52,15 @@ except ImportError as e:
     print("Missing dependency: markdown. Install with `pip install markdown`.", file=sys.stderr)
     raise
 
-MAX_DEFAULT_BYTES = 50 * 1024
+try:
+    from fastapi import FastAPI
+    from fastapi.responses import HTMLResponse
+    import uvicorn
+    FASTAPI_AVAILABLE = True
+except ImportError:
+    FASTAPI_AVAILABLE = False
+
+MAX_DEFAULT_BYTES = 1000000000000 * 1024
 BINARY_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".ico",
     ".pdf", ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar",
@@ -495,16 +508,73 @@ def derive_temp_output_path(repo_url: str) -> pathlib.Path:
     return pathlib.Path(tempfile.gettempdir()) / filename
 
 
+def create_server(html_content: str, repo_url: str, port: int = 8000, host: str = "0.0.0.0"):
+    """Create FastAPI server to serve the HTML content."""
+    if not FASTAPI_AVAILABLE:
+        print("❌ FastAPI not available. Install with: pip install fastapi uvicorn", file=sys.stderr)
+        return None
+    
+    app = FastAPI(title="Repo Viewer", description=f"Flattened view of {repo_url}")
+    
+    @app.get("/", response_class=HTMLResponse)
+    async def get_repo():
+        return HTMLResponse(content=html_content)
+    
+    @app.get("/health")
+    async def health():
+        return {"status": "ok", "repo": repo_url}
+    
+    return app, port, host
+
+
+async def serve_with_fastapi(html_content: str, repo_url: str, port: int = 8000, host: str = "0.0.0.0"):
+    """Serve the HTML content via FastAPI."""
+    result = create_server(html_content, repo_url, port, host)
+    if result is None:
+        return
+    
+    app, port, host = result
+    
+    print(f"🚀 Starting server on http://{host}:{port}", file=sys.stderr)
+    print(f"📖 Repository: {repo_url}", file=sys.stderr)
+    print(f"🌐 Access your flattened repo at: http://{host}:{port}", file=sys.stderr)
+    print(f"💡 Press Ctrl+C to stop the server", file=sys.stderr)
+    
+    config = uvicorn.Config(app=app, host=host, port=port, log_level="info")
+    server = uvicorn.Server(config)
+    
+    # Handle graceful shutdown
+    def signal_handler(signum, frame):
+        print(f"\n🛑 Received signal {signum}, shutting down...", file=sys.stderr)
+        server.should_exit = True
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    try:
+        await server.serve()
+    except KeyboardInterrupt:
+        print("\n👋 Server stopped", file=sys.stderr)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Flatten a GitHub repo to a single HTML page")
     ap.add_argument("repo_url", help="GitHub repo URL (https://github.com/owner/repo[.git])")
     ap.add_argument("-o", "--out", help="Output HTML file path (default: temporary file derived from repo name)")
     ap.add_argument("--max-bytes", type=int, default=MAX_DEFAULT_BYTES, help="Max file size to render (bytes); larger files are listed but skipped")
-    ap.add_argument("--no-open", action="store_true", help="Don't open the HTML file in browser after generation")
+    ap.add_argument("--serve", action="store_true", help="Serve via FastAPI instead of saving to file")
+    ap.add_argument("--port", type=int, default=8000, help="Port for FastAPI server (default: 8000)")
+    ap.add_argument("--host", default="0.0.0.0", help="Host for FastAPI server (default: 0.0.0.0)")
+    ap.add_argument("--no-open", action="store_true", help="Don't open the HTML file in browser after generation (only for file mode)")
     args = ap.parse_args()
     
-    # Set default output path if not provided
-    if args.out is None:
+    # Check FastAPI availability if serving
+    if args.serve and not FASTAPI_AVAILABLE:
+        print("❌ FastAPI not available. Install with: pip install fastapi uvicorn", file=sys.stderr)
+        return 1
+    
+    # Set default output path if not provided and not serving
+    if args.out is None and not args.serve:
         args.out = str(derive_temp_output_path(args.repo_url))
 
     tmpdir = tempfile.mkdtemp(prefix="flatten_repo_")
@@ -525,19 +595,24 @@ def main() -> int:
         print(f"🔨 Generating HTML...", file=sys.stderr)
         html_out = build_html(args.repo_url, repo_dir, head, infos)
 
-        out_path = pathlib.Path(args.out)
-        print(f"💾 Writing HTML file: {out_path.resolve()}", file=sys.stderr)
-        out_path.write_text(html_out, encoding="utf-8")
-        file_size = out_path.stat().st_size
-        print(f"✓ Wrote {bytes_human(file_size)} to {out_path}", file=sys.stderr)
+        if args.serve:
+            # Serve via FastAPI
+            asyncio.run(serve_with_fastapi(html_out, args.repo_url, args.port, args.host))
+        else:
+            # Save to file
+            out_path = pathlib.Path(args.out)
+            print(f"💾 Writing HTML file: {out_path.resolve()}", file=sys.stderr)
+            out_path.write_text(html_out, encoding="utf-8")
+            file_size = out_path.stat().st_size
+            print(f"✓ Wrote {bytes_human(file_size)} to {out_path}", file=sys.stderr)
+            
+            if not args.no_open:
+                print(f"🌐 Opening {out_path} in browser...", file=sys.stderr)
+                webbrowser.open(f"file://{out_path.resolve()}")
         
-        if not args.no_open:
-            print(f"🌐 Opening {out_path} in browser...", file=sys.stderr)
-            webbrowser.open(f"file://{out_path.resolve()}")
-        
-        print(f"🗑️  Cleaning up temporary directory: {tmpdir}", file=sys.stderr)
         return 0
     finally:
+        print(f"🗑️  Cleaning up temporary directory: {tmpdir}", file=sys.stderr)
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
